@@ -8,6 +8,7 @@ no JMX port and no agent.
 """
 
 import glob
+import os
 import re
 import struct
 
@@ -31,6 +32,18 @@ def find_file(pid, nspid):
         if hits:
             return hits[0]
     return None
+
+
+def why_missing(pid):
+    """Why find_file() found nothing: 'no-access' (JVM runs as another user
+    and we are not root) or 'not-found' (perf data disabled / not created)."""
+    try:
+        os.listdir("%s/%d/root/tmp" % (procfs.PROC, pid))
+    except PermissionError:
+        return "no-access"
+    except OSError:
+        pass
+    return "not-found"
 
 
 class PerfData(object):

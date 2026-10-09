@@ -120,14 +120,24 @@ def cmd_discover(args):
     for r in rows:
         j = jvm.get(r["series"])
         p = rec.procs.get(r["pid"])
-        r["jvm"] = ("%.0f/%.0f MB" % (j["heap_used_mb"], j["heap_max_mb"] or 0)) if j else \
-            ("no hsperfdata" if p is not None and p.java else "-")
+        if j:
+            r["jvm"] = "%.0f/%.0f MB" % (j["heap_used_mb"], j["heap_max_mb"] or 0)
+        elif p is not None and p.java:
+            r["jvm"] = "needs root" if p.perf_problem == "no-access" else "no hsperfdata"
+        else:
+            r["jvm"] = "-"
     print("PROCESSES (%d)" % len(rows))
     _table(rows, [("series", "SERIES", 40), ("target", "TARGET", 12), ("pid", "PID", 7),
                   ("cpu_pct", "CPU%", 7), ("rss_mb", "RSS MB", 9), ("threads", "THR", 5),
                   ("jvm", "HEAP used/max", 16)])
     if not rows:
         print("  (nothing matched - check [target ...] sections; run as root to see all processes)")
+    if any(r["jvm"] == "needs root" for r in rows):
+        print("\n  'needs root': that JVM runs as another user. Its CPU and memory are recorded, but heap/GC")
+        print("  and open-file counts need perfmon to run as root or as the JVM's own user.")
+    if any(r["jvm"] == "no hsperfdata" for r in rows):
+        print("\n  'no hsperfdata': the JVM keeps no perf-data file (-XX:-UsePerfData, -XX:+PerfDisableSharedMem,")
+        print("  or its uid has no name in the container's /etc/passwd). See README, JVM notes.")
     return 0
 
 

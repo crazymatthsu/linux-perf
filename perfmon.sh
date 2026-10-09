@@ -49,8 +49,9 @@ alive() { [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
 warn_root() {
   if [[ "$(id -u)" != "0" ]]; then
-    echo "note: not running as root - JVM heap metrics, open-fd counts and docker access may be" >&2
-    echo "      unavailable for processes owned by other users. Prefer: sudo $0 $*" >&2
+    echo "note: running as $(id -un), not root. CPU, memory, threads and container metrics are recorded" >&2
+    echo "      for every process; JVM heap/GC and open-file counts only for processes running as" >&2
+    echo "      $(id -un) (check with: ps -eo user,pid,comm | grep -E 'java|ampServer')." >&2
   fi
 }
 

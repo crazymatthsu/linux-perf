@@ -36,9 +36,44 @@ cd /opt && mkdir perfmon && tar xzf perfmon.tgz -C perfmon && cd perfmon
 
 Requirements on the box: `bash` and Python **3.6+**. RHEL 8's
 `/usr/libexec/platform-python` is detected automatically. You also need the
-`docker` (or `podman`) CLI. Run as **root** (`sudo`). Root is needed to read
-other users' JVM perf-data, count their file descriptors and talk to the
-Docker socket.
+`docker` (or `podman`) CLI. Root is **not** required; see the next section.
+
+### Running without root (service account)
+
+perfmon can run as an ordinary account, such as the service account that
+runs your applications. What it can see depends on which host user each
+process runs as:
+
+| metric | any process | processes running as the same user as perfmon |
+|---|---|---|
+| process CPU, memory, threads | yes | yes |
+| container CPU, memory, throttling, network, disk | yes | yes |
+| host CPU, memory, network | yes | yes |
+| JVM heap / GC | no | yes |
+| open-file count | no | yes |
+
+The account also needs to list containers. With Docker, that means
+membership in the `docker` group, which is effectively root-equivalent. With
+rootless Podman, the account's own `podman` is enough.
+
+**Which user is a process really?** It's the user the process runs as on the
+host, not the user who ran `docker run`. Many images run as root inside the
+container, and with Docker that is root on the host too. Check:
+
+```bash
+ps -eo user,pid,comm | grep -E 'java|ampServer'
+```
+
+* Shows your service account: everything works without root.
+* Shows `root` or a number (rootless Podman maps non-root container users
+  to numeric "subordinate" UIDs): CPU and memory are still recorded, but heap/GC
+  and open-file counts need root. `discover` labels these JVMs `needs root`.
+  The alternative is to run the container as your account (`--user <uid>`,
+  or as root inside a rootless Podman container).
+
+perfmon writes its data under its own directory, so install it somewhere the
+account can write (e.g. its home). The dashboard port (8080) needs no
+privileges.
 
 ### RHEL 9 / RHEL 10 and Podman
 
@@ -51,7 +86,7 @@ both.
 | Python | RHEL 10 ships Python 3.12. If a minimal install lacks it: `sudo dnf install python3` |
 | Docker CE | nothing to change |
 | Podman (rootful, `sudo podman ...`) | set `docker_cmd = podman` in `perfmon.conf`. With the `podman-docker` package installed, `docker` works too |
-| Podman (rootless, containers started by a normal user) | run perfmon **as that user, without sudo**. Root's `podman ps` cannot see another user's rootless containers |
+| Podman (rootless, containers started by a normal user) | run perfmon **as that user, without sudo**. Root's `podman ps` cannot see another user's rootless containers. See [Running without root](#running-without-root-service-account) for which JVMs then report heap/GC |
 | firewalld (on by default) | open the dashboard port: `sudo firewall-cmd --add-port=8080/tcp` (add `--permanent` and `--reload` to keep it), or use the SSH tunnel in [section 4](#4-watch-from-your-desktop) |
 | SELinux (enforcing) | nothing to change. perfmon is an ordinary host process reading `/proc` and `/sys/fs/cgroup` |
 
@@ -126,6 +161,9 @@ main class, jar or module (`java:JettyMain`, `java:orders-1.2.jar`). A process
 that restarts keeps its series. The restart shows as a gap plus an event marker.
 
 ## 3. Run a load test
+
+`sudo` in these examples is optional; see
+[Running without root](#running-without-root-service-account).
 
 ```bash
 sudo ./perfmon.sh start 500-users          # background recorder -> data/<timestamp>_500-users/
@@ -228,9 +266,15 @@ Definitions:
   container, read from the host via `/proc/<pid>/root`. The format is the same in every
   HotSpot JDK since 8. It was tested here with JDK 21 using G1, Parallel and
   ZGC. The image doesn't need JDK tools.
-* If `discover` shows `no hsperfdata`, either the JVM runs with
-  `-XX:-UsePerfData` or `-XX:+PerfDisableSharedMem` (remove that flag), or
-  perfmon isn't running as root.
+* If `discover` shows `no hsperfdata`, the JVM isn't keeping the file:
+  * it runs with `-XX:-UsePerfData` or `-XX:+PerfDisableSharedMem` (remove the flag), or
+  * it runs under a UID that has **no name in the container's `/etc/passwd`**
+    (typical for `--user 1500` on an image that doesn't define that user).
+    The JVM silently skips the file, and `jstat` fails too. Define the user in
+    the image, or mount a passwd file that has it
+    (`-v /etc/passwd:/etc/passwd:ro`).
+* `needs root` means the JVM runs as a different host user than perfmon; see
+  [Running without root](#running-without-root-service-account).
 * **Non-generational ZGC** (`-XX:+UseZGC` on Java 15–22 without
   `-XX:+ZGenerational`) maps the heap up to three times, so process RSS can
   read up to 3× the real use. For those services, read the heap chart and the
@@ -262,7 +306,7 @@ least as new as the one it was built against. Use a recent base image.
 
 | symptom | fix |
 |---------|-----|
-| `container discovery failed: permission denied` | run with `sudo`, or set `docker_cmd = sudo docker` |
+| `container discovery failed: permission denied` | add the account to the `docker` group, run with `sudo`, or set `docker_cmd = sudo docker` |
 | a process is missing in `discover` | check its name with `docker top <container>`. `exe` must match the executable exactly. Use `process` for command-line text |
 | container rows but no process rows | the process regex didn't match. Try `process = .*` and narrow down |
 | JVM heap shows `no hsperfdata` | see [JVM notes](#6-jvm-notes) |
