@@ -1,0 +1,66 @@
+; perfmon configuration
+; Copy to perfmon.conf (next to perfmon.sh) and edit. Without a perfmon.conf,
+; perfmon records every process in every running container.
+;
+; Check what a config matches before a test:   ./perfmon.sh discover
+
+[perfmon]
+; seconds between samples (0.5 - 5 is typical; use 2-5 for multi-hour soak tests)
+interval = 1
+; how often to look for new / restarted containers and processes (seconds)
+discover_interval = 10
+; where recordings go (relative to this file)
+output_dir = data
+; "docker", "sudo docker" or "podman"
+docker_cmd = docker
+; regex of container names that get container-level (cgroup) metrics
+containers = .*
+; host-wide CPU / memory / network
+host_metrics = yes
+
+; web dashboard defaults (./perfmon.sh web)
+web_bind = 0.0.0.0
+web_port = 8080
+; require a login, format user:password (empty = open)
+web_auth =
+
+; ---------------------------------------------------------------------------
+; Targets: which processes to chart. Every option is a regular expression.
+;   container = matched against the container name (search). Omit both
+;               container and image to match processes on the host itself.
+;   image     = matched against the image name
+;   exe       = full match against the executable name (argv[0] basename)
+;   process   = searched in the full command line
+;   exclude   = command lines to skip
+;   label     = fixed display name instead of the derived one
+;   jvm       = auto | yes | no  - heap / GC metrics from hsperfdata
+;               (auto = yes for java processes)
+; Series are named <container>/<label>, e.g. "deephaven/java:JettyMain".
+; A process is assigned to the first target that matches.
+; ---------------------------------------------------------------------------
+
+[target deephaven]
+container = deephaven
+exe = java
+jvm = yes
+
+[target amps]
+container = amps
+exe = ampServer
+
+; All Java services: every container whose name starts with app- or svc-
+[target java-apps]
+container = ^(app|svc)-
+exe = java
+
+; Java processes running directly on the host (not in a container)
+;[target host-java]
+;exe = java
+;process = com\.mycompany\.
+
+; A specific main class in any container
+;[target pricing]
+;container = .*
+;exe = java
+;process = com\.mycompany\.pricing\.PricingServer
+;label = pricing

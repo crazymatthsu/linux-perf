@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>perfmon</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpolyline points='1,12 5,7 8,10 15,3' fill='none' stroke='%232a78d6' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <strong>perfmon</strong>
+    <span id="run-name"></span>
+    <span id="host" class="muted"></span>
+  </div>
+  <div class="controls">
+    <label class="sr-only" for="run">Recording</label>
+    <select id="run"></select>
+    <div class="seg" id="window" role="group" aria-label="Time window"></div>
+    <button type="button" id="reset-zoom" hidden>Reset zoom</button>
+    <button type="button" id="pause" aria-pressed="false">Pause</button>
+    <a id="dl-report" class="button" href="#" download>Download report</a>
+    <button type="button" id="theme" title="Toggle light / dark" aria-label="Toggle light or dark theme"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg></button>
+  </div>
+</header>
+
+<div class="filters">
+  <label class="sr-only" for="filter">Filter series</label>
+  <input id="filter" type="search" placeholder="Filter processes / containers (regex), e.g. deephaven|amps" autocomplete="off">
+  <span id="range" class="muted"></span>
+  <span id="tz" class="muted"></span>
+</div>
+
+<div id="status" class="status-bar" role="status" hidden></div>
+
+<main>
+  <section id="tiles" class="tiles" aria-label="Key figures"></section>
+  <p id="empty" class="empty muted">Waiting for data…</p>
+  <div id="charts"></div>
+
+  <section class="chart-section">
+    <h2>Summary <small id="summary-range" class="muted"></small></h2>
+    <div id="summary"></div>
+  </section>
+
+  <section class="chart-section" id="markers-section" hidden>
+    <h2>Markers &amp; events
+      <label class="inline muted"><input type="checkbox" id="show-events"> show process/container start-stop events</label>
+    </h2>
+    <div id="markers" class="card"></div>
+  </section>
+</main>
+
+<footer class="muted">
+  Drag across any chart to zoom all charts to that range · double-click to reset · click a legend entry to hide it.
+</footer>
+
+<script src="static/chart.js"></script>
+<script src="static/app.js"></script>
+</body>
+</html>
