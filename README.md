@@ -207,8 +207,11 @@ Definitions:
 * If `discover` shows `no hsperfdata`, either the JVM runs with
   `-XX:-UsePerfData` or `-XX:+PerfDisableSharedMem` (remove that flag), or
   perfmon isn't running as root.
-* **ZGC** maps the heap several times, so its RSS overstates real memory use.
-  Read the heap chart and the container memory for ZGC services.
+* **Non-generational ZGC** (`-XX:+UseZGC` on Java 15–22 without
+  `-XX:+ZGenerational`) maps the heap up to three times, so process RSS can
+  read up to 3× the real use. For those services, read the heap chart and the
+  container memory, which counts each physical page once. Generational ZGC
+  (the default from Java 23) and the other collectors report RSS accurately.
 * For leak hunting, watch **Old generation used**: a floor that keeps rising
   after each GC means retained objects. The summary's **RSS Δ** column shows
   growth over the range in view.
