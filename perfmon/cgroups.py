@@ -37,10 +37,14 @@ def _read_kv(path):
 
 
 def _cut_after(path, container_id):
-    """'/system.slice/docker-<id>.scope/init.scope' -> '/system.slice/docker-<id>.scope'."""
+    """'/machine.slice/libpod-<id>.scope/container' -> '/machine.slice/libpod-<id>.scope'.
+
+    The container's own cgroup aggregates any sub-cgroups (crun's
+    "container" child, systemd's init.scope inside the container, ...).
+    """
     segs = path.split("/")
     for i, s in enumerate(segs):
-        if container_id in s:
+        if procfs.container_segment_id(s) == container_id:
             return "/".join(segs[:i + 1])
     return path
 

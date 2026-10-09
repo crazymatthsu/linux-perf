@@ -148,6 +148,80 @@ class CgroupReadTest(unittest.TestCase):
         self.assertEqual((v["io_read"], v["io_write"]), (4096, 8192))
 
 
+class CgroupV2LayoutTest(unittest.TestCase):
+    """RHEL 9/10 style hosts: pure cgroup v2, systemd cgroup driver."""
+
+    CID = "0123456789abcdef" * 4
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.old = procfs.PROC
+        procfs.PROC = os.path.join(self.dir, "proc")
+        self.cgroot = os.path.join(self.dir, "sys", "fs", "cgroup")
+        os.makedirs(os.path.join(procfs.PROC, "self"))
+        os.makedirs(self.cgroot)
+        self.write("proc/self/mounts",
+                   "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+                   "cgroup2 %s cgroup2 rw,seclabel,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot 0 0\n"
+                   % self.cgroot)
+        self.write("sys/fs/cgroup/cgroup.controllers", "cpuset cpu io memory hugetlb pids rdma misc\n")
+
+    def tearDown(self):
+        procfs.PROC = self.old
+        shutil.rmtree(self.dir)
+
+    def write(self, rel, text):
+        path = os.path.join(self.dir, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def container_cgroup(self, rel, usage_usec, mem):
+        d = "sys/fs/cgroup" + rel
+        self.write(d + "/cpu.stat", "usage_usec %d\nnr_periods 10\nnr_throttled 0\n" % usage_usec)
+        self.write(d + "/memory.current", "%d\n" % mem)
+        self.write(d + "/memory.max", "max\n")
+        self.write(d + "/memory.stat", "file 0\ninactive_file 0\n")
+
+    def resolve(self, pid, cgroup_line):
+        self.write("proc/%d/cgroup" % pid, cgroup_line + "\n")
+        cg = cgroups.Cgroups()
+        self.assertEqual(cg.version, "v2")
+        ids = procfs.container_ids_in(procfs.read_cgroup(pid))
+        dirs = cg.container_dirs(pid, ids[0]) if ids else {}
+        return ids, dirs, cg
+
+    def test_docker_systemd_driver(self):
+        rel = "/system.slice/docker-%s.scope" % self.CID
+        self.container_cgroup(rel, 3000000, 500 << 20)
+        ids, dirs, cg = self.resolve(100, "0::" + rel)
+        self.assertEqual(ids, [self.CID])
+        self.assertEqual(dirs, {"unified": self.cgroot + rel})
+        v = cg.read(dirs)
+        self.assertEqual((v["cpu_ns"], v["mem_usage"]), (3000000000, 500 << 20))
+
+    def test_podman_rootful_ignores_conmon(self):
+        scope = "/machine.slice/libpod-%s.scope" % self.CID
+        self.container_cgroup(scope, 9000000, 700 << 20)
+        self.container_cgroup("/machine.slice/libpod-conmon-%s.scope" % self.CID, 1000, 1 << 20)
+        # conmon is not part of the container ...
+        ids, _, _ = self.resolve(200, "0::/machine.slice/libpod-conmon-%s.scope" % self.CID)
+        self.assertEqual(ids, [])
+        # ... the workload (in crun's "container" child cgroup) is, and is
+        # measured at the libpod scope, which aggregates its children.
+        ids, dirs, cg = self.resolve(201, "0::%s/container" % scope)
+        self.assertEqual(ids, [self.CID])
+        self.assertEqual(dirs, {"unified": self.cgroot + scope})
+        self.assertEqual(cg.read(dirs)["cpu_ns"], 9000000000)
+
+    def test_podman_rootless(self):
+        scope = "/user.slice/user-1000.slice/user@1000.service/user.slice/libpod-%s.scope" % self.CID
+        self.container_cgroup(scope, 5000, 64 << 20)
+        ids, dirs, cg = self.resolve(300, "0::%s/container" % scope)
+        self.assertEqual(ids, [self.CID])
+        self.assertEqual(cg.read(dirs)["mem_usage"], 64 << 20)
+
+
 def make_hsperf(counters, little=True):
     """Build a minimal version-2 hsperfdata image."""
     e = "<" if little else ">"

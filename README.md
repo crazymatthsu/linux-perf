@@ -40,6 +40,30 @@ Requirements on the box: `bash` and Python **3.6+**. RHEL 8's
 other users' JVM perf-data, count their file descriptors and talk to the
 Docker socket.
 
+### RHEL 9 / RHEL 10 and Podman
+
+RHEL 10 works as is. Two things are different from older RHEL: it uses
+**cgroup v2 only**, and its own container engine is **Podman**. perfmon handles
+both.
+
+| | what to do |
+|---|---|
+| Python | RHEL 10 ships Python 3.12. If a minimal install lacks it: `sudo dnf install python3` |
+| Docker CE | nothing to change |
+| Podman (rootful, `sudo podman ...`) | set `docker_cmd = podman` in `perfmon.conf`. With the `podman-docker` package installed, `docker` works too |
+| Podman (rootless, containers started by a normal user) | run perfmon **as that user, without sudo**. Root's `podman ps` cannot see another user's rootless containers |
+| firewalld (on by default) | open the dashboard port: `sudo firewall-cmd --add-port=8080/tcp` (add `--permanent` and `--reload` to keep it), or use the SSH tunnel in [section 4](#4-watch-from-your-desktop) |
+| SELinux (enforcing) | nothing to change. perfmon is an ordinary host process reading `/proc` and `/sys/fs/cgroup` |
+
+Tested: the test suite and a full discover → record → web → report cycle on
+the AlmaLinux 10.2 userland (binary-compatible with RHEL 10: Python 3.12,
+bash 5.2, glibc 2.39), and live discovery against rootful Podman 4.9 (CPU and
+memory match `podman stats`). Podman's systemd cgroup layout on cgroup v2
+(`machine.slice/libpod-<id>.scope`, with its `libpod-conmon-<id>.scope`
+monitor excluded) and rootless layouts are covered by unit tests. They have not
+been run on a live RHEL 10 kernel, so check `./perfmon.sh discover` against
+`docker stats` / `podman stats` once on the real box.
+
 ## 2. Configure
 
 ```bash
@@ -243,9 +267,9 @@ least as new as the one it was built against. Use a recent base image.
 | container rows but no process rows | the process regex didn't match. Try `process = .*` and narrow down |
 | JVM heap shows `no hsperfdata` | see [JVM notes](#6-jvm-notes) |
 | page loads, charts empty | no recording yet. `./perfmon.sh start test` (the dashboard auto-follows) |
-| cannot reach `:8080` from the desktop | firewall: use the SSH tunnel above, or open the port (`firewall-cmd --add-port=8080/tcp`) |
+| cannot reach `:8080` from the desktop | firewall: use the SSH tunnel above, or open the port (`sudo firewall-cmd --add-port=8080/tcp`) |
 | browser slow on multi-hour runs | record with `-i 2`..`-i 5`, or make a smaller report with `report --resample 10s` |
-| podman | `docker_cmd = podman` (rootful). Untested here, but discovery uses the same `ps --format` template and podman's `libpod-<id>.scope` cgroups are matched the same way |
+| podman | `docker_cmd = podman`; rootless containers: run perfmon as their owner. See [RHEL 9 / RHEL 10 and Podman](#rhel-9--rhel-10-and-podman) |
 
 ## 9. How it works
 

@@ -11,7 +11,14 @@ PROC = os.environ.get("PERFMON_PROC", "/proc")
 CLK_TCK = os.sysconf("SC_CLK_TCK")
 PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
 
-_CONTAINER_ID_RE = re.compile(r"[0-9a-f]{64}")
+# A cgroup path segment that *is* a container's cgroup:
+#   <id>                       docker/podman cgroupfs driver (/docker/<id>)
+#   docker-<id>.scope          docker, systemd driver
+#   libpod-<id>.scope          podman, systemd cgroup manager (RHEL default)
+#   cri-containerd-<id>.scope, crio-<id>.scope
+# Podman/CRI-O run their monitor in "libpod-conmon-<id>.scope" /
+# "crio-conmon-<id>.scope": same id, but not the container, so excluded.
+_CONTAINER_SEG_RE = re.compile(r"^(?:[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*-)?([0-9a-f]{64})(?:\.scope)?$")
 
 # Interfaces that only carry traffic already counted on a physical NIC
 # (docker bridge, veth pairs, CNI overlays) or that never leave the box.
@@ -95,8 +102,23 @@ def read_cgroup(pid):
     return _read("%s/%d/cgroup" % (PROC, pid))
 
 
+def container_segment_id(segment):
+    """Container id if this cgroup path segment is a container's own cgroup."""
+    m = _CONTAINER_SEG_RE.match(segment)
+    if m and "conmon" not in segment:
+        return m.group(1)
+    return None
+
+
 def container_ids_in(text):
-    return _CONTAINER_ID_RE.findall(text)
+    """Container ids found in /proc/<pid>/cgroup content."""
+    ids = []
+    for line in text.splitlines():
+        for seg in line.split(":", 2)[-1].split("/"):
+            cid = container_segment_id(seg)
+            if cid and cid not in ids:
+                ids.append(cid)
+    return ids
 
 
 def java_main(argv):
