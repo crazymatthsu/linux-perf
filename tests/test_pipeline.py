@@ -115,8 +115,14 @@ class PipelineTest(unittest.TestCase):
         self.assertGreater(burner["cpu"]["max"], 50)
         with open(os.path.join(self.run_dir, "processes.csv")) as f:
             text = f.read()
-        out = list(csv.DictReader(io.StringIO(report.resample_csv(text, "series", 60))))
-        self.assertEqual(len([r for r in out if r["series"] == "burner"]), 1)
+        raw = [r for r in csv.DictReader(io.StringIO(text)) if r["series"] == "burner"]
+        out = [r for r in csv.DictReader(io.StringIO(report.resample_csv(text, "series", 60)))
+               if r["series"] == "burner"]
+        # Buckets are aligned to the clock, so a short run may straddle a minute.
+        buckets = sorted({int(float(r["epoch"]) // 60) * 60 for r in raw})
+        self.assertEqual([int(float(r["epoch"])) for r in out], buckets)
+        first = [float(r["cpu_pct"]) for r in raw if int(float(r["epoch"]) // 60) * 60 == buckets[0]]
+        self.assertAlmostEqual(float(out[0]["cpu_pct"]), sum(first) / len(first), delta=0.01)
 
     def test_report_is_self_contained(self):
         html = report.build_report_html(self.run_dir)

@@ -16,6 +16,7 @@ import csv
 import json
 import logging
 import os
+import pwd
 import re
 import signal
 import socket
@@ -110,15 +111,27 @@ def write_json(path, obj):
     os.replace(tmp, path)
 
 
+def _owner(pid):
+    try:
+        uid = os.stat("%s/%d" % (procfs.PROC, pid)).st_uid
+    except OSError:
+        return "?"
+    try:
+        return "%s (uid %d)" % (pwd.getpwuid(uid).pw_name, uid)
+    except KeyError:
+        return "uid %d" % uid
+
+
 class Proc(object):
     __slots__ = ("pid", "start", "series", "target", "container", "name", "java", "nspid",
-                 "perf", "perf_warned", "prev", "prev_gc")
+                 "perf", "perf_warned", "perf_problem", "prev", "prev_gc")
 
     def __init__(self, pid, start, series, target, container, name, java, nspid):
         self.pid, self.start, self.series, self.target = pid, start, series, target
         self.container, self.name, self.java, self.nspid = container, name, java, nspid
         self.perf = None
         self.perf_warned = False
+        self.perf_problem = None
         self.prev = None
         self.prev_gc = None
 
@@ -326,14 +339,26 @@ class Recorder(object):
         for p in self.procs.values():
             if p.java and p.perf is None:
                 path = hsperf.find_file(p.pid, p.nspid)
+                problem = None
+                if path and not os.access(path, os.R_OK):   # visible but owned by another uid
+                    path, problem = None, "no-access"
                 if path:
                     p.perf = hsperf.PerfData(path)
                     p.prev_gc = None
+                    p.perf_problem = None
                     log.info("jvm metrics for %s from %s", p.series, path)
-                elif not p.perf_warned:
-                    p.perf_warned = True
-                    log.warning("no hsperfdata for %s pid=%d yet (JVM run with -XX:-UsePerfData, "
-                                "or not root?) - will keep retrying", p.series, p.pid)
+                else:
+                    p.perf_problem = problem or hsperf.why_missing(p.pid)
+                    if not p.perf_warned:
+                        p.perf_warned = True
+                        if p.perf_problem == "no-access":
+                            log.warning("no jvm metrics for %s pid=%d: it runs as %s and perfmon runs as %s. "
+                                        "Run perfmon as root or as that user (CPU/memory are still recorded)",
+                                        p.series, p.pid, _owner(p.pid), _owner(os.getpid()))
+                        else:
+                            log.warning("no hsperfdata for %s pid=%d yet: JVM started with -XX:-UsePerfData or "
+                                        "-XX:+PerfDisableSharedMem, or its uid has no name in the container's "
+                                        "/etc/passwd - will keep retrying", p.series, p.pid)
         self.force_discover = False
         self._first_discovery = False
 
@@ -414,7 +439,9 @@ class Recorder(object):
             if not c.hostnet:
                 try:
                     net = procfs.read_net_dev(c.pid)[:2]
-                except OSError:
+                except PermissionError:   # hardened /proc: just no network numbers
+                    pass
+                except OSError:           # member process gone
                     self.force_discover = True
             cur = (mono, v, net)
             prev, c.prev = c.prev, cur
