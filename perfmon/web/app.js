@@ -3,10 +3,10 @@
   'use strict';
 
   const EMBED = window.PERFMON_EMBED || null;
-  const FILES = ['host', 'containers', 'processes', 'jvm', 'markers'];
-  const KEY = { containers: 'container', processes: 'series', jvm: 'series' };
-  const TEXT = new Set(['time', 'epoch', 'container', 'image', 'series', 'target', 'name', 'kind', 'text']);
-  const REG = { processes: 'proc', jvm: 'proc', containers: 'ctr', host: 'host' };
+  const FILES = ['host', 'containers', 'processes', 'jvm', 'disks', 'markers'];
+  const KEY = { containers: 'container', processes: 'series', jvm: 'series', disks: 'path' };
+  const TEXT = new Set(['time', 'epoch', 'container', 'image', 'series', 'target', 'name', 'kind', 'text', 'path', 'mount']);
+  const REG = { processes: 'proc', jvm: 'proc', containers: 'ctr', host: 'host', disks: 'disk' };
   const WINDOWS = [['5m', 300], ['15m', 900], ['1h', 3600], ['6h', 21600], ['All', 0]];
 
   const fmt = window.perfFmt;
@@ -22,19 +22,19 @@
   const SECTIONS = [
     { title: 'Processes', charts: [
       { id: 'p-cpu', file: 'processes', col: 'cpu_pct', title: 'CPU', unit: '% of one core (100% = 1 core)', fmt: pct },
-      { id: 'p-rss', file: 'processes', col: 'rss_mb', title: 'Memory (RSS)', unit: 'resident set size', fmt: mb },
+      { id: 'p-rss', file: 'processes', col: 'rss_mb', title: 'Memory (RSS)', unit: 'resident set size, MB', fmt: mb },
       { id: 'p-thr', file: 'processes', col: 'threads', title: 'OS threads', unit: 'count', fmt: num },
       { id: 'p-fds', file: 'processes', col: 'fds', title: 'Open file descriptors', unit: 'count (sockets, files)', fmt: num },
     ] },
     { title: 'JVM', charts: [
-      { id: 'j-heap', file: 'jvm', col: 'heap_used_mb', title: 'Heap used', unit: 'young + old generation', fmt: mb },
-      { id: 'j-old', file: 'jvm', col: 'old_used_mb', title: 'Old generation used', unit: 'a rising floor after GCs suggests a leak', fmt: mb },
+      { id: 'j-heap', file: 'jvm', col: 'heap_used_mb', title: 'Heap used', unit: 'young + old generation, MB', fmt: mb },
+      { id: 'j-old', file: 'jvm', col: 'old_used_mb', title: 'Old generation used', unit: 'MB; a rising floor after GCs suggests a leak', fmt: mb },
       { id: 'j-gc', file: 'jvm', col: 'gc_pause_pct', title: 'GC pause time', unit: '% of wall-clock time spent in GC pauses', fmt: pct },
       { id: 'j-gcc', file: 'jvm', col: 'gc_young_count', title: 'Young GCs per sample', unit: 'collections per interval', fmt: num },
     ] },
     { title: 'Containers', charts: [
       { id: 'c-cpu', file: 'containers', col: 'cpu_pct', title: 'CPU', unit: '% of one core (100% = 1 core)', fmt: pct },
-      { id: 'c-mem', file: 'containers', col: 'mem_used_mb', title: 'Memory', unit: 'excluding reclaimable page cache (same as docker stats)', fmt: mb },
+      { id: 'c-mem', file: 'containers', col: 'mem_used_mb', title: 'Memory', unit: 'MB, excluding reclaimable page cache (same as docker stats)', fmt: mb },
       { id: 'c-thr', file: 'containers', col: 'throttled_pct', title: 'CPU throttling', unit: '% of CFS periods throttled by the --cpus limit', fmt: pct, onlyIf: 'cpu_limit_cores', hideIfZero: true },
       { id: 'c-rx', file: 'containers', col: 'net_rx_mbps', title: 'Network in', unit: 'Mbit/s (host-network containers not shown)', fmt: mbit, hideIfZero: true },
       { id: 'c-tx', file: 'containers', col: 'net_tx_mbps', title: 'Network out', unit: 'Mbit/s', fmt: mbit, hideIfZero: true },
@@ -43,12 +43,18 @@
     { title: 'Host', charts: [
       { id: 'h-cpu', file: 'host', title: 'CPU', unit: '% of all cores', fmt: pct,
         cols: [['cpu_pct', 'CPU busy'], ['iowait_pct', 'I/O wait'], ['steal_pct', 'Steal (VM)']] },
-      { id: 'h-mem', file: 'host', title: 'Memory', unit: 'used = total − available', fmt: mb,
+      { id: 'h-mem', file: 'host', title: 'Memory', unit: 'MB; used = total − available', fmt: mb,
         cols: [['mem_used_mb', 'Used'], ['swap_used_mb', 'Swap used']] },
       { id: 'h-net', file: 'host', title: 'Network', unit: 'Mbit/s on physical interfaces', fmt: mbit,
         cols: [['net_rx_mbps', 'In'], ['net_tx_mbps', 'Out']] },
       { id: 'h-load', file: 'host', title: 'Load average (1 min)', unit: 'runnable tasks', fmt: (v) => fmt(v, 2),
         cols: [['load1', 'Load 1m']] },
+    ] },
+    { title: 'Disk space', charts: [
+      { id: 'd-pct', file: 'disks', col: 'fs_used_pct', title: 'Filesystem used', unit: '% of the filesystem each folder is on (same as df Use%)', fmt: pct },
+      { id: 'd-free', file: 'disks', col: 'fs_avail_mb', title: 'Free space', unit: 'MB available on that filesystem', fmt: mb },
+      { id: 'd-dir', file: 'disks', col: 'dir_size_mb', title: 'Folder size', unit: 'MB used by the folder itself (like du -sx)', fmt: mb },
+      { id: 'd-files', file: 'disks', col: 'dir_files', title: 'Files in folder', unit: 'count, including subfolders', fmt: num },
     ] },
   ];
 
@@ -63,7 +69,7 @@
 
   // ------------------------------------------------------------------ data
   function freshData() {
-    return { host: { t: [], cols: {} }, containers: {}, processes: {}, jvm: {}, markers: [], tmin: Infinity, tmax: -Infinity };
+    return { host: { t: [], cols: {} }, containers: {}, processes: {}, jvm: {}, disks: {}, markers: [], tmin: Infinity, tmax: -Infinity };
   }
 
   function parseLine(line) {
@@ -106,7 +112,7 @@
       else {
         const k = v[h.idx[KEY[file]]];
         tab = d[file][k] || (d[file][k] = { t: [], cols: {}, info: {} });
-        for (const f of ['container', 'image', 'target', 'name']) if (f in h.idx) tab.info[f] = v[h.idx[f]];
+        for (const f of ['container', 'image', 'target', 'name', 'mount']) if (f in h.idx) tab.info[f] = v[h.idx[f]];
       }
       tab.t.push(t);
       for (const [n, i] of h.numeric) {
@@ -216,7 +222,7 @@
     state.offsets = {};
     state.headers = {};
     state.data = freshData();
-    state.slots = { proc: {}, ctr: {}, host: {} };
+    state.slots = { proc: {}, ctr: {}, host: {}, disk: {} };
     state.zoom = null;
     state.meta = await fetchJSON('runs/' + encodeURIComponent(id) + '/meta.json');
     state.live = state.meta.live;
@@ -234,6 +240,10 @@
     document.title = 'perfmon · ' + m.name;
     if (!EMBED) $('dl-report').href = api('runs/' + encodeURIComponent(m.id) + '/report.html');
     for (const s of SECTIONS) for (const c of s.charts) if (charts[c.id]) charts[c.id].chart.gap = Math.max(5, (m.interval || 1) * 2.5);
+    if (charts['d-dir']) {
+      charts['d-dir'].unitEl.textContent = charts['d-dir'].def.unit +
+        (m.disk_scan_interval ? '; re-measured every ' + dur(m.disk_scan_interval) : '');
+    }
   }
 
   // -------------------------------------------------------------- rendering
@@ -307,7 +317,7 @@
           onZoom: (a, b) => { state.zoom = a == null ? null : [a, b]; render(true); },
           onToggle: (k) => { state.hidden[k] = !state.hidden[k]; render(true); },
         });
-        charts[def.id] = { def, card, chart };
+        charts[def.id] = { def, card, chart, unitEl: u };
       }
     }
   }
@@ -434,6 +444,15 @@
     if (top) root.appendChild(tile('Busiest process', pct(top.avg), top.k + ' · peak ' + pct(top.max)));
     const nP = Object.keys(d.processes).length, nJ = Object.keys(d.jvm).length, nC = Object.keys(d.containers).length;
     root.appendChild(tile('Processes tracked', String(nP), nJ + ' JVMs · ' + nC + ' containers'));
+    let full = null;
+    for (const [k, tab] of Object.entries(d.disks)) {
+      const s = stats(tab.t, tab.cols.fs_used_pct || [], view);
+      if (s.n && (!full || s.last > full.pct)) full = { k, pct: s.last, free: stats(tab.t, tab.cols.fs_avail_mb || [], view).last };
+    }
+    if (full) {
+      root.appendChild(tile('Fullest disk', pct(full.pct), full.k + ' · ' + mb(full.free) + ' free',
+        full.pct >= 95 ? 'critical' : full.pct >= 85 ? 'warning' : null));
+    }
   }
 
   // --------------------------------------------------------------- tables
@@ -546,6 +565,41 @@
         ['Net in avg', mbit], ['Net out avg', mbit], ['Disk write avg', mbs],
       ], cRows, 'Containers'));
     }
+    const dRows = [];
+    for (const [k, tab] of Object.entries(d.disks)) {
+      if (!matches(k)) continue;
+      const dc = tab.cols;
+      const used = endpoints(tab.t, dc.fs_used_mb || [], view);
+      if (!used) continue;
+      const free = stats(tab.t, dc.fs_avail_mb || [], view);
+      const dir = stats(tab.t, dc.dir_size_mb || [], view);
+      const span = used.t1 - used.t0;
+      const growth = span >= 60 ? (used.v1 - used.v0) / span * 60 : NaN;   // MB per minute
+      const fullIn = growth > 0 ? free.last / growth * 60 : NaN;          // seconds
+      dRows.push([k, stats(tab.t, dc.fs_used_pct || [], view).max, free.last, growth, fullIn,
+        stats(tab.t, dc.fs_size_mb || [], view).last, tab.info.mount || '', dir.first, dir.last, dir.last - dir.first,
+        stats(tab.t, dc.dir_files || [], view).last, stats(tab.t, dc.inodes_used_pct || [], view).max]);
+    }
+    if (dRows.length) {
+      root.appendChild(table('disks', [
+        ['Folder', null], ['Disk used max', pct], ['Disk free at end', mb],
+        ['Disk growth', (v) => (v === v ? (v >= 0 ? '+' : '') + fmt(v, Math.abs(v) >= 10 ? 0 : 1) + ' MB/min' : '–')],
+        ['Disk full in (at that rate)', (v) => (v === v ? dur(v) : '–')],
+        ['Disk size', mb], ['Filesystem', (v) => v], ['Folder start', mb], ['Folder end', mb],
+        ['Folder Δ', (v) => (v === v ? (v > 0 ? '+' : '') + mb(v) : '–')], ['Files', num], ['Inodes max', pct],
+      ], dRows, 'Disk space'));
+    }
+  }
+
+  // First and last sample inside the view (for growth rates).
+  function endpoints(t, y, view) {
+    let a = -1, b = -1;
+    for (let i = lowerBound(t, view[0]); i < t.length && t[i] <= view[1]; i++) {
+      if (y[i] !== y[i]) continue;
+      if (a < 0) a = i;
+      b = i;
+    }
+    return a < 0 ? null : { t0: t[a], v0: y[a], t1: t[b], v1: y[b] };
   }
 
   function renderMarkers() {
@@ -672,7 +726,7 @@
       state.meta = EMBED.meta;
       state.runId = EMBED.meta.id;
       state.data = freshData();
-      state.slots = { proc: {}, ctr: {}, host: {} };
+      state.slots = { proc: {}, ctr: {}, host: {}, disk: {} };
       applyMeta();
       $('run-name').textContent = EMBED.meta.name;
       for (const f of FILES) if (EMBED.files[f]) ingest(f, EMBED.files[f]);

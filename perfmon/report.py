@@ -11,8 +11,9 @@ import time
 from .recorder import FILES
 from .server import WEB, read_meta
 
-KEY = {"containers": "container", "processes": "series", "jvm": "series"}
-TEXT = {"time", "epoch", "container", "image", "series", "target", "name", "kind", "text", "pid"}
+KEY = {"containers": "container", "processes": "series", "jvm": "series", "disks": "path"}
+TEXT = {"time", "epoch", "container", "image", "series", "target", "name", "kind", "text", "pid",
+        "path", "mount"}
 
 
 def _read(path):
@@ -147,8 +148,9 @@ def summarize(run_dir):
     jvms = _group(_rows(os.path.join(run_dir, "jvm.csv")), "series")
     ctrs = _group(_rows(os.path.join(run_dir, "containers.csv")), "container")
     host = _rows(os.path.join(run_dir, "host.csv"))
+    dsk = _group(_rows(os.path.join(run_dir, "disks.csv")), "path")
     col = lambda rows, c: [_num(r.get(c)) for r in rows]  # noqa: E731
-    out = {"processes": [], "containers": [], "host": {}}
+    out = {"processes": [], "containers": [], "host": {}, "disks": []}
     for k, rows in procs.items():
         e = {"series": k, "cpu": _stats(col(rows, "cpu_pct")), "rss": _stats(col(rows, "rss_mb")),
              "threads": _stats(col(rows, "threads"))}
@@ -168,6 +170,17 @@ def summarize(run_dir):
                                   "tx": _stats(col(rows, "net_tx_mbps"))})
     for c in ("cpu_pct", "mem_used_mb", "load1", "collector_cpu_pct"):
         out["host"][c] = _stats(col(host, c))
+    for k, rows in dsk.items():
+        used = [(float(r["epoch"]), _num(r.get("fs_used_mb"))) for r in rows if _num(r.get("fs_used_mb")) is not None]
+        growth = None
+        if len(used) > 1 and used[-1][0] - used[0][0] >= 60:
+            growth = (used[-1][1] - used[0][1]) / (used[-1][0] - used[0][0]) * 60   # MB/min
+        free = _stats(col(rows, "fs_avail_mb"))
+        out["disks"].append({"path": k, "mount": rows[-1].get("mount", ""),
+                             "pct": _stats(col(rows, "fs_used_pct")), "free": free, "growth": growth,
+                             "full_in_h": free["last"] / growth / 60 if growth and growth > 0 and free else None,
+                             "dir": _stats(col(rows, "dir_size_mb")), "files": _stats(col(rows, "dir_files")),
+                             "inodes": _stats(col(rows, "inodes_used_pct"))})
     return out
 
 
@@ -225,3 +238,17 @@ def print_summary(run_dir):
                 for e in s["containers"]]
         _print_table(["container", "cpu avg", "p95", "max", "mem MB avg", "max", "limit",
                       "throttled% max", "rx Mb/s avg", "tx Mb/s avg"], rows)
+    if s["disks"]:
+        print("")
+        print("DISK SPACE   (disk = the filesystem the folder is on; full-in assumes that growth rate continues)")
+        rows = []
+        for e in s["disks"]:
+            d = e["dir"]
+            rows.append([e["path"], e["mount"], _f(e["pct"], "max"), _f(e["free"], "last", 0),
+                         "%+.1f" % e["growth"] if e["growth"] is not None else "-",
+                         "%.1f" % e["full_in_h"] if e["full_in_h"] is not None else "-",
+                         _f(d, "first", 0), _f(d, "last", 0),
+                         "%+.0f" % (d["last"] - d["first"]) if d else "-",
+                         _f(e["files"], "last", 0), _f(e["inodes"], "max")])
+        _print_table(["folder", "filesystem", "disk used% max", "disk free MB", "disk growth MB/min", "full in h",
+                      "folder MB start", "end", "delta", "files", "inodes% max"], rows)

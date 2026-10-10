@@ -4,6 +4,8 @@ import configparser
 import os
 import re
 
+from .disks import parse_paths
+
 INSTALL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DEFAULTS = {
@@ -13,6 +15,8 @@ DEFAULTS = {
     "docker_cmd": "docker",
     "containers": ".*",
     "host_metrics": "yes",
+    "disk_paths": "/logs, /apps",
+    "disk_scan_interval": "60",
     "web_bind": "0.0.0.0",
     "web_port": "8080",
     "web_auth": "",
@@ -91,14 +95,21 @@ class Config(object):
         g = dict(DEFAULTS)
         if cp.has_section("perfmon"):
             g.update(cp["perfmon"])
-        self.interval = float(g["interval"])
+        self.set_interval(g["interval"])
         self.discover_interval = float(g["discover_interval"])
         # Relative paths are relative to the config file, else to the install dir.
         base = os.path.dirname(self.path) if self.path else INSTALL_DIR
-        self.output_dir = os.path.join(base, g["output_dir"])
+        # Where runs are written: $PERFMON_OUTPUT_DIR beats the config file.
+        env_out = os.environ.get("PERFMON_OUTPUT_DIR", "").strip()
+        if env_out:
+            self.output_dir = os.path.abspath(os.path.expanduser(env_out))
+        else:
+            self.output_dir = os.path.normpath(os.path.join(base, os.path.expanduser(g["output_dir"])))
         self.docker_cmd = g["docker_cmd"].split()
         self.containers = re.compile(g["containers"] or ".*")
         self.host_metrics = cp.BOOLEAN_STATES.get(g["host_metrics"].lower(), True)
+        self.disk_paths = parse_paths(g["disk_paths"])
+        self.disk_scan_interval = float(g["disk_scan_interval"] or 0)
         self.web_bind = g["web_bind"]
         self.web_port = int(g["web_port"])
         self.web_auth = g["web_auth"].strip() or None
@@ -110,8 +121,16 @@ class Config(object):
         self.default_targets = not self.targets
         if self.default_targets:
             self.targets.append(Target("containers", DEFAULT_TARGET))
-        if self.interval < 0.2:
-            raise ValueError("interval must be >= 0.2 seconds")
+
+
+    def set_interval(self, value):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("interval must be a number of seconds, got %r" % (value,))
+        if not 0.2 <= v <= 3600:
+            raise ValueError("interval must be between 0.2 and 3600 seconds, got %g" % v)
+        self.interval = v
 
 
 def find_default(script_dir):

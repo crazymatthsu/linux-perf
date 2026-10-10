@@ -5,11 +5,13 @@
 ; Check what a config matches before a test:   ./perfmon.sh discover
 
 [perfmon]
-; seconds between samples (0.5 - 5 is typical; use 2-5 for multi-hour soak tests)
+; take a sample every N seconds (0.2 - 3600). 1-2 is typical for load tests,
+; 5-10 for multi-hour soak tests. Override per run: ./perfmon.sh start NAME -i 5
 interval = 1
 ; how often to look for new / restarted containers and processes (seconds)
 discover_interval = 10
-; where recordings go (relative to this file)
+; where recordings go: absolute path, ~/path, or relative to this file.
+; Override per run: ./perfmon.sh start NAME -o /other/dir, or $PERFMON_OUTPUT_DIR
 output_dir = data
 ; "docker", "sudo docker" or "podman"
 docker_cmd = docker
@@ -17,6 +19,15 @@ docker_cmd = docker
 containers = .*
 ; host-wide CPU / memory / network
 host_metrics = yes
+
+; disk space: folders to watch, comma-separated (empty = off). For each one
+; perfmon records the filesystem it lives on (like df: size, used, free,
+; inodes) every interval, and the folder's own size (like du -sx) every
+; disk_scan_interval seconds. Folders that don't exist are skipped.
+disk_paths = /logs, /apps
+; seconds between folder-size measurements (walks the whole tree at low
+; priority); 0 = filesystem usage only
+disk_scan_interval = 60
 
 ; web dashboard defaults (./perfmon.sh web)
 web_bind = 0.0.0.0

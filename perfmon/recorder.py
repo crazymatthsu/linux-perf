@@ -8,6 +8,7 @@ A recording ("run") is a directory:
         containers.csv   one row per container per sample (cgroup counters)
         processes.csv    one row per matched process per sample (/proc)
         jvm.csv          heap / GC per JVM per sample (hsperfdata)
+        disks.csv        filesystem usage + folder size per configured folder
         markers.csv      user annotations + process/container start/stop events
         recorder.log
 """
@@ -24,7 +25,7 @@ import struct
 import threading
 import time
 
-from . import __version__, hsperf, procfs
+from . import __version__, disks, hsperf, procfs
 from .cgroups import Cgroups
 from .containers import ContainerWatcher
 
@@ -46,10 +47,12 @@ JVM_COLS = ["time", "epoch", "series", "target", "container", "pid",
             "old_used_mb", "metaspace_mb", "gc_young_count", "gc_young_ms",
             "gc_full_count", "gc_full_ms", "gc_other_count", "gc_other_ms",
             "gc_pause_pct", "java_threads"]
+DISK_COLS = ["time", "epoch", "path", "mount", "fs_size_mb", "fs_used_mb", "fs_avail_mb",
+             "fs_used_pct", "inodes_used_pct", "dir_size_mb", "dir_files"]
 MARKER_COLS = ["time", "epoch", "kind", "text"]
 
 FILES = {"host": HOST_COLS, "containers": CONTAINER_COLS, "processes": PROCESS_COLS,
-         "jvm": JVM_COLS, "markers": MARKER_COLS}
+         "jvm": JVM_COLS, "disks": DISK_COLS, "markers": MARKER_COLS}
 
 
 def _fmt(v):
@@ -160,6 +163,9 @@ class Recorder(object):
         self.run_dir = None
         self.samples = 0
         self.mem_total = procfs.read_meminfo().get("MemTotal", 0)
+        self.disk_mounts = {}  # configured folder that exists -> its mount point
+        self.disk_missing = set()
+        self.scanner = None
         self._first_discovery = True
         try:
             self._self_netns = procfs.netns_id("self")
@@ -194,6 +200,8 @@ class Recorder(object):
             "recorder_pid": os.getpid(),
             "config": self.cfg.path,
             "targets": [t.describe() for t in self.cfg.targets],
+            "disk_paths": self.cfg.disk_paths,
+            "disk_scan_interval": self.cfg.disk_scan_interval,
         }
         write_json(os.path.join(self.run_dir, "meta.json"), self.meta)
         link = os.path.join(self.cfg.output_dir, "latest")
@@ -359,8 +367,29 @@ class Recorder(object):
                             log.warning("no hsperfdata for %s pid=%d yet: JVM started with -XX:-UsePerfData or "
                                         "-XX:+PerfDisableSharedMem, or its uid has no name in the container's "
                                         "/etc/passwd - will keep retrying", p.series, p.pid)
+        self._discover_disks()
         self.force_discover = False
         self._first_discovery = False
+
+    def _discover_disks(self):
+        found = {}
+        for path in self.cfg.disk_paths:
+            if os.path.isdir(path):
+                found[path] = disks.mount_of(path)    # re-checked: a filesystem may get mounted there
+                if found[path] != self.disk_mounts.get(path):
+                    log.info("disk space for %s (filesystem %s)", path, found[path])
+                self.disk_missing.discard(path)
+            elif path not in self.disk_missing:
+                self.disk_missing.add(path)
+                log.info("disk path %s does not exist or is not a directory - skipped "
+                         "(checked again every %ss)", path, self.cfg.discover_interval)
+        self.disk_mounts = found
+        if found and self.cfg.disk_scan_interval > 0:
+            if self.scanner is None:
+                self.scanner = disks.FolderScanner(found, self.cfg.disk_scan_interval)
+                self.scanner.start()
+            else:
+                self.scanner.paths = list(found)
 
     def _is_hostnet(self, pid):
         ns = procfs.netns_id(pid)
@@ -381,9 +410,26 @@ class Recorder(object):
         self._sample_containers(stamp, mono, write)
         self._sample_procs(stamp, mono, write)
         if write:
+            self._sample_disks(stamp)
             self.samples += 1
             for lg in self.logs.values():
                 lg.flush()
+
+    def _sample_disks(self, stamp):
+        for path, mount in self.disk_mounts.items():
+            try:
+                fs = disks.fs_usage(path)
+            except OSError:
+                self.force_discover = True     # folder removed / filesystem unmounted
+                continue
+            row = dict(stamp)
+            row.update(path=path, mount=mount, fs_size_mb=fs["size"] / MB, fs_used_mb=fs["used"] / MB,
+                       fs_avail_mb=fs["avail"] / MB, fs_used_pct=fs["used_pct"],
+                       inodes_used_pct=fs["inodes_used_pct"])
+            scan = self.scanner.results.get(path) if self.scanner else None
+            if scan:
+                row.update(dir_size_mb=scan["bytes"] / MB, dir_files=scan["files"])
+            self.logs["disks"].write(row)
 
     def _sample_host(self, stamp, mono, write):
         try:
@@ -584,5 +630,7 @@ class Recorder(object):
         finally:
             if self.watcher:
                 self.watcher.stop()
+            if self.scanner:
+                self.scanner.stop()
             self.close_run()
         return self.run_dir

@@ -16,6 +16,9 @@ desktop**, or open a single self-contained HTML report afterwards.
 * **Container and process view.** Container rows match `docker stats`. Process
   rows add RSS, threads and FDs, so you can tell which process inside a
   container is responsible.
+* **Disk space for `/logs` and `/apps` by default** (configurable). For each
+  folder: the filesystem it's on, like `df`, and the folder's own size, like
+  `du`, with a growth rate and a time-to-full estimate.
 
 ![dashboard](docs/dashboard.png)
 
@@ -49,6 +52,8 @@ process runs as:
 | process CPU, memory, threads | yes | yes |
 | container CPU, memory, throttling, network, disk | yes | yes |
 | host CPU, memory, network | yes | yes |
+| disk space of the filesystem (`df`) | yes | yes |
+| folder size (`du`) | only the subfolders the account can read; the log notes when the size is a lower bound | yes |
 | JVM heap / GC | no | yes |
 | open-file count | no | yes |
 
@@ -128,6 +133,40 @@ container = ^(app|svc)-      ; every container named app-* or svc-*
 exe = java
 ```
 
+Disk space is set in the `[perfmon]` section. The defaults watch `/logs` and
+`/apps`. Folders that don't exist are skipped, and checked again every 10 s:
+
+```ini
+[perfmon]
+disk_paths = /logs, /apps, /data/deephaven   ; comma-separated; empty = off
+disk_scan_interval = 60                      ; seconds between folder-size walks; 0 = df only
+```
+
+### Data folder and sample rate
+
+| | in `perfmon.conf` (`[perfmon]`) | for one run | default |
+|---|---|---|---|
+| where data is written | `output_dir = /data/perfmon` (absolute, `~/…`, or relative to the config file) | `./perfmon.sh start NAME -o /data/perfmon`, or `PERFMON_OUTPUT_DIR=/data/perfmon` | `data/` next to `perfmon.sh` |
+| sample every N seconds | `interval = 5` (0.2 to 3600) | `./perfmon.sh start NAME -i 5` | 1 |
+
+* **Which folder wins:** `-o`, then `$PERFMON_OUTPUT_DIR`, then `output_dir`
+  in the config. After `start NAME -o DIR`, the other commands (`mark`,
+  `stop`, `status`, `web`, `list`, `summary`, `report`) use DIR until the next
+  `start`. `./perfmon.sh status` shows which folder is in use. If the
+  dashboard is showing another folder, `start` prints how to restart it.
+* **What the interval means:** rates (CPU %, network, disk I/O, GC pause %)
+  are averages over each interval. Memory, heap, threads and disk space are
+  the value at the moment of the sample. At `interval = 30`, a 2-second CPU
+  spike is averaged into its 30 s window, so it shows at about 1/15 of its
+  height. Use 1 to 2 s to catch spikes, and 5 to 10 s for multi-hour soak tests.
+* Each run stores its interval in `meta.json`; the charts, gaps and live
+  refresh adapt to it. A changed interval takes effect at the next `start`.
+* **Disk use:** a dozen processes and containers produce roughly 7 MB of CSV
+  per hour at 1 s, and 1.4 MB per hour at 5 s.
+* Two other timers are separate: `discover_interval` (looking for
+  new/restarted containers, 10 s) and `disk_scan_interval` (folder sizes,
+  60 s).
+
 `discover` is a dry run. It shows exactly what will be recorded, with current
 CPU, memory and heap readings:
 
@@ -142,6 +181,11 @@ PROCESSES (4)
   deephaven/java:JettyMain        deephaven  2178   136.0     500.2    23       376/512 MB
   amps/ampServer                  amps       2097    41.7     161.3     1                -
   app-orders/java:OrderService    java-apps  2624    91.4     366.3    22       290/384 MB
+
+DISK SPACE (/logs, /apps; folder size every 60s)
+  PATH       FILESYSTEM      SIZE   USED      FREE INODES FOLDER SIZE     FILES
+  /logs      /logs       200.0 GB  41.3%  117.4 GB   0.4%     82.6 GB    14,208
+  /apps      /           252.0 GB  28.5%   27.8 GB   1.6%      3.9 GB    51,377
 ```
 
 Target options (all regular expressions):
@@ -182,7 +226,9 @@ sudo ./perfmon.sh wrap 1000-users --cooldown 30 -- ./run-gatling.sh --users 1000
 ```
 
 Other commands: `status`, `list`, `report [RUN] [--resample 10s]`, `web-stop`.
-Add `-i 2 -d 1h` to `start` for a 2-second interval that stops after 1 hour.
+Add `-i 2 -d 1h` to `start` for a 2-second interval that stops after 1 hour,
+and `-o DIR` to write the run somewhere else (see
+[Data folder and sample rate](#data-folder-and-sample-rate)).
 Run `./perfmon.sh help` for the full list.
 
 ## 4. Watch from your desktop
@@ -231,6 +277,7 @@ data/20261009-101500_500-users/
   jvm.csv          per JVM
   containers.csv   per container (cgroup)
   host.csv         whole machine
+  disks.csv        per watched folder: its filesystem (df) + the folder's size (du)
   markers.csv      your marks + automatic process/container start/stop events
   recorder.log
   report.html      written by `stop` / `report`
@@ -242,6 +289,7 @@ data/20261009-101500_500-users/
 | `jvm.csv` | `heap_used_mb`, `heap_committed_mb`, `heap_max_mb`, `young_used_mb`, `old_used_mb`, `metaspace_mb`, `gc_young_count`/`_ms`, `gc_full_count`/`_ms`, `gc_other_count`/`_ms` (per interval), `gc_pause_pct`, `java_threads` |
 | `containers.csv` | `cpu_pct`, `cpu_limit_cores`, `throttled_pct`, `mem_used_mb`, `mem_limit_mb`, `mem_pct`, `mem_cache_mb`, `net_rx_mbps`, `net_tx_mbps`, `disk_read_mbs`, `disk_write_mbs`, `pids` |
 | `host.csv` | `cpu_pct`, `iowait_pct`, `steal_pct`, `load1`, `mem_used_mb`, `mem_avail_mb`, `swap_used_mb`, `net_rx_mbps`, `net_tx_mbps`, `ctx_switches_ps`, `collector_cpu_pct` |
+| `disks.csv` | `path`, `mount`, `fs_size_mb`, `fs_used_mb`, `fs_avail_mb`, `fs_used_pct`, `inodes_used_pct`, `dir_size_mb`, `dir_files` |
 
 Every row also has `time` (server local time) and `epoch`.
 
@@ -259,6 +307,21 @@ Definitions:
 * **Network** is Mbit/s, read from the container's network namespace.
   Containers using `--network host` share the host's interfaces, so they show
   no per-container network (see the host network chart).
+* **Disk space** has two views per folder:
+  * `fs_*` describe the **filesystem the folder is on**, sampled every
+    interval. `fs_used_pct` matches `df`'s Use%. `fs_avail_mb` is what
+    non-root users can still write. If `/logs` and `/apps` share a
+    filesystem, their `fs_*` values are identical.
+  * `dir_size_mb` / `dir_files` are the **folder itself**, like `du -sx`:
+    allocated space (sparse files count what's really used), hard links
+    counted once, symlinks not followed, other filesystems mounted inside not
+    included. The walk runs in the background at the lowest CPU/IO priority
+    every `disk_scan_interval` seconds, and the last value is repeated until
+    the next walk.
+  * The summary's **disk growth** is the filesystem's used-space change per
+    minute over the range in view. **Disk full in** projects the free space at
+    that rate. Zoom to the steady-state phase of a test for a meaningful
+    figure.
 
 ## 6. JVM notes
 
@@ -313,6 +376,8 @@ least as new as the one it was built against. Use a recent base image.
 | page loads, charts empty | no recording yet. `./perfmon.sh start test` (the dashboard auto-follows) |
 | cannot reach `:8080` from the desktop | firewall: use the SSH tunnel above, or open the port (`sudo firewall-cmd --add-port=8080/tcp`) |
 | browser slow on multi-hour runs | record with `-i 2`..`-i 5`, or make a smaller report with `report --resample 10s` |
+| log warns that measuring a folder's size is slow | the folder has very many files: raise `disk_scan_interval`, or set it to `0` to record only filesystem usage |
+| a disk folder shows no rows | it doesn't exist (see `discover` / `recorder.log`) or isn't a directory |
 | podman | `docker_cmd = podman`; rootless containers: run perfmon as their owner. See [RHEL 9 / RHEL 10 and Podman](#rhel-9--rhel-10-and-podman) |
 
 ## 9. How it works
@@ -325,6 +390,7 @@ least as new as the one it was built against. Use a recent base image.
    which container                     /proc/<pid>/net/dev        ↗
  [target] rules → tracked processes    /proc/<pid>/root/tmp/hsperfdata_*/<nspid> → jvm.csv
                                        /proc/stat, meminfo, net/dev → host.csv
+                                       statvfs(/logs, /apps) + background du-walk → disks.csv
 ```
 
 The web server (`perfmon/server.py`) is a small read-only HTTP server. The
