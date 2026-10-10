@@ -4,6 +4,8 @@ import configparser
 import os
 import re
 
+from .disks import parse_paths
+
 INSTALL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DEFAULTS = {
@@ -13,6 +15,8 @@ DEFAULTS = {
     "docker_cmd": "docker",
     "containers": ".*",
     "host_metrics": "yes",
+    "disk_paths": "/logs, /apps",
+    "disk_scan_interval": "60",
     "web_bind": "0.0.0.0",
     "web_port": "8080",
     "web_auth": "",
@@ -99,6 +103,8 @@ class Config(object):
         self.docker_cmd = g["docker_cmd"].split()
         self.containers = re.compile(g["containers"] or ".*")
         self.host_metrics = cp.BOOLEAN_STATES.get(g["host_metrics"].lower(), True)
+        self.disk_paths = parse_paths(g["disk_paths"])
+        self.disk_scan_interval = float(g["disk_scan_interval"] or 0)
         self.web_bind = g["web_bind"]
         self.web_port = int(g["web_port"])
         self.web_auth = g["web_auth"].strip() or None

@@ -14,6 +14,7 @@
   --event: #d6d4cc;
   --good: #0ca30c;
   --warning: #fab219;
+  --critical: #d03b3b;
   --series-1: #2a78d6;
   --series-2: #eb6834;
   --series-3: #1baf7a;
@@ -153,6 +154,7 @@ main { padding: 0 16px 24px; }
 .status { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .status.good { background: var(--good); }
 .status.warning { background: var(--warning); }
+.status.critical { background: var(--critical); }
 
 .chart-section h2 { font-size: 15px; margin: 24px 0 10px; font-weight: 600; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
 .chart-section h2 small { font-weight: 400; font-size: 12px; }

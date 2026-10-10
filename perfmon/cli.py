@@ -99,6 +99,7 @@ def cmd_discover(args):
     cfg = load_config(args)
     if not args.verbose:
         logging.getLogger("perfmon").setLevel(logging.WARNING)
+    scan_interval, cfg.disk_scan_interval = cfg.disk_scan_interval, 0   # measured below, with a time cap
     rec = Recorder(cfg)
     rec.discover()
     rec.logs = {k: Sink() for k in FILES}
@@ -138,11 +139,56 @@ def cmd_discover(args):
     if any(r["jvm"] == "no hsperfdata" for r in rows):
         print("\n  'no hsperfdata': the JVM keeps no perf-data file (-XX:-UsePerfData, -XX:+PerfDisableSharedMem,")
         print("  or its uid has no name in the container's /etc/passwd). See README, JVM notes.")
+    _discover_disks(cfg, rec, scan_interval)
     return 0
 
 
+def _human(mb):
+    if mb is None:
+        return ""
+    return "%.1f GB" % (mb / 1024.0) if mb >= 1024 else "%.0f MB" % mb
+
+
+def _discover_disks(cfg, rec, scan_interval):
+    from .disks import dir_usage
+    print("")
+    if not cfg.disk_paths:
+        print("DISK SPACE: off (disk_paths is empty)")
+        return
+    print("DISK SPACE (%s; folder size every %s)" % (", ".join(cfg.disk_paths),
+                                                    "%gs" % scan_interval if scan_interval > 0 else "- off"))
+    fs = {r["path"]: r for r in rec.logs["disks"].rows}
+    rows = []
+    for path in cfg.disk_paths:
+        r = fs.get(path)
+        if r is None:
+            rows.append({"path": path, "mount": "(not found - skipped)"})
+            continue
+        row = {"path": path, "mount": r["mount"], "size": _human(r["fs_size_mb"]),
+               "pct": "%.1f%%" % r["fs_used_pct"] if r["fs_used_pct"] is not None else "",
+               "free": _human(r["fs_avail_mb"]),
+               "inodes": "%.1f%%" % r["inodes_used_pct"] if r["inodes_used_pct"] is not None else "-"}
+        if scan_interval > 0:
+            try:
+                d = dir_usage(path, deadline=time.monotonic() + 10)
+                row["folder"] = ("" if d["complete"] else ">") + _human(d["bytes"] / 1048576.0)
+                row["files"] = "{:,}".format(d["files"]) + ("" if d["complete"] else "+")
+                if not d["complete"]:
+                    row["note"] = "large folder: stopped counting after 10s"
+                elif d["unreadable"]:
+                    row["note"] = "%d dirs unreadable" % d["unreadable"]
+            except OSError as e:
+                row["folder"] = "error: %s" % e.strerror
+        rows.append(row)
+    _table(rows, [("path", "PATH", 22), ("mount", "FILESYSTEM", 22), ("size", "SIZE", 9),
+                  ("pct", "USED", 6), ("free", "FREE", 9), ("inodes", "INODES", 6),
+                  ("folder", "FOLDER SIZE", 11), ("files", "FILES", 9), ("note", "", 40)])
+
+
 def _table(rows, cols):
-    print("  " + " ".join(h.ljust(w) if i < 2 else h.rjust(w) for i, (_, h, w) in enumerate(cols)))
+    """First two columns and header-less (note) columns left-aligned, numbers right."""
+    left = [i < 2 or not h for i, (_, h, _) in enumerate(cols)]
+    print("  " + " ".join(h.ljust(w) if left[i] else h.rjust(w) for i, (_, h, w) in enumerate(cols)).rstrip())
     for r in rows:
         cells = []
         for i, (k, _, w) in enumerate(cols):
@@ -150,8 +196,8 @@ def _table(rows, cols):
             if isinstance(v, float):
                 v = "%.1f" % v
             v = "" if v is None else str(v)
-            cells.append(v[:w].ljust(w) if i < 2 else v[:w].rjust(w))
-        print("  " + " ".join(cells))
+            cells.append(v[:w].ljust(w) if left[i] else v[:w].rjust(w))
+        print("  " + " ".join(cells).rstrip())
 
 
 def cmd_mark(args):
