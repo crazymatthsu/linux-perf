@@ -142,6 +142,31 @@ disk_paths = /logs, /apps, /data/deephaven   ; comma-separated; empty = off
 disk_scan_interval = 60                      ; seconds between folder-size walks; 0 = df only
 ```
 
+### Data folder and sample rate
+
+| | in `perfmon.conf` (`[perfmon]`) | for one run | default |
+|---|---|---|---|
+| where data is written | `output_dir = /data/perfmon` (absolute, `~/…`, or relative to the config file) | `./perfmon.sh start NAME -o /data/perfmon`, or `PERFMON_OUTPUT_DIR=/data/perfmon` | `data/` next to `perfmon.sh` |
+| sample every N seconds | `interval = 5` (0.2 to 3600) | `./perfmon.sh start NAME -i 5` | 1 |
+
+* **Which folder wins:** `-o`, then `$PERFMON_OUTPUT_DIR`, then `output_dir`
+  in the config. After `start NAME -o DIR`, the other commands (`mark`,
+  `stop`, `status`, `web`, `list`, `summary`, `report`) use DIR until the next
+  `start`. `./perfmon.sh status` shows which folder is in use. If the
+  dashboard is showing another folder, `start` prints how to restart it.
+* **What the interval means:** rates (CPU %, network, disk I/O, GC pause %)
+  are averages over each interval. Memory, heap, threads and disk space are
+  the value at the moment of the sample. At `interval = 30`, a 2-second CPU
+  spike is averaged into its 30 s window, so it shows at about 1/15 of its
+  height. Use 1 to 2 s to catch spikes, and 5 to 10 s for multi-hour soak tests.
+* Each run stores its interval in `meta.json`; the charts, gaps and live
+  refresh adapt to it. A changed interval takes effect at the next `start`.
+* **Disk use:** a dozen processes and containers produce roughly 7 MB of CSV
+  per hour at 1 s, and 1.4 MB per hour at 5 s.
+* Two other timers are separate: `discover_interval` (looking for
+  new/restarted containers, 10 s) and `disk_scan_interval` (folder sizes,
+  60 s).
+
 `discover` is a dry run. It shows exactly what will be recorded, with current
 CPU, memory and heap readings:
 
@@ -201,7 +226,9 @@ sudo ./perfmon.sh wrap 1000-users --cooldown 30 -- ./run-gatling.sh --users 1000
 ```
 
 Other commands: `status`, `list`, `report [RUN] [--resample 10s]`, `web-stop`.
-Add `-i 2 -d 1h` to `start` for a 2-second interval that stops after 1 hour.
+Add `-i 2 -d 1h` to `start` for a 2-second interval that stops after 1 hour,
+and `-o DIR` to write the run somewhere else (see
+[Data folder and sample rate](#data-folder-and-sample-rate)).
 Run `./perfmon.sh help` for the full list.
 
 ## 4. Watch from your desktop

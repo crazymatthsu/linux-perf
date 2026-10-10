@@ -58,6 +58,51 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(t.matches_process("java", "java -jar app.jar"))
 
 
+class DataDirAndIntervalTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.old_env = os.environ.pop("PERFMON_OUTPUT_DIR", None)
+
+    def tearDown(self):
+        os.environ.pop("PERFMON_OUTPUT_DIR", None)
+        if self.old_env is not None:
+            os.environ["PERFMON_OUTPUT_DIR"] = self.old_env
+
+    def conf(self, body):
+        path = os.path.join(self.dir, "perfmon.conf")
+        with open(path, "w") as f:
+            f.write("[perfmon]\n" + body)
+        return path
+
+    def test_output_dir_relative_absolute_home(self):
+        self.assertEqual(Config(self.conf("output_dir = runs\n")).output_dir, os.path.join(self.dir, "runs"))
+        self.assertEqual(Config(self.conf("output_dir = /srv/perf\n")).output_dir, "/srv/perf")
+        self.assertEqual(Config(self.conf("output_dir = ~/perf\n")).output_dir,
+                         os.path.join(os.path.expanduser("~"), "perf"))
+
+    def test_env_overrides_config(self):
+        os.environ["PERFMON_OUTPUT_DIR"] = "/data/perf"
+        self.assertEqual(Config(self.conf("output_dir = runs\n")).output_dir, "/data/perf")
+
+    def test_interval_limits(self):
+        self.assertEqual(Config(self.conf("interval = 30\n")).interval, 30)
+        self.assertEqual(Config(self.conf("interval = 0.5\n")).interval, 0.5)
+        for bad in ("0", "0.1", "5000", "abc"):
+            with self.assertRaises(ValueError):
+                Config(self.conf("interval = %s\n" % bad))
+
+    def test_cli_overrides(self):
+        from perfmon import cli
+        args = cli.argparse.Namespace(config=self.conf("interval = 5\noutput_dir = runs\n"),
+                                      interval=2.0, output_dir=os.path.join(self.dir, "elsewhere"))
+        cfg = cli.load_config(args)
+        self.assertEqual((cfg.interval, cfg.output_dir), (2.0, os.path.join(self.dir, "elsewhere")))
+        args.interval = 0.0          # used to be silently ignored
+        with self.assertRaises(ValueError):
+            cli.load_config(args)
+
+
 class PipelineTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -32,10 +32,10 @@ def parse_duration(text):
 def load_config(args):
     path = args.config or find_default(ROOT)
     cfg = Config(path)
-    if getattr(args, "interval", None):
-        cfg.interval = args.interval
+    if getattr(args, "interval", None) is not None:
+        cfg.set_interval(args.interval)
     if getattr(args, "output_dir", None):
-        cfg.output_dir = os.path.abspath(args.output_dir)
+        cfg.output_dir = os.path.abspath(os.path.expanduser(args.output_dir))
     return cfg
 
 
@@ -269,7 +269,8 @@ def main(argv=None):
     p.add_argument("-n", "--name", default="run", help="run name, e.g. 500-users")
     p.add_argument("-i", "--interval", type=float, help="seconds between samples (overrides config)")
     p.add_argument("-d", "--duration", type=parse_duration, help="stop after e.g. 30m, 2h")
-    p.add_argument("-o", "--output-dir", help="where run directories are created")
+    p.add_argument("-o", "--output-dir", help="where run directories are created "
+                   "(overrides $PERFMON_OUTPUT_DIR and the config file)")
     p.set_defaults(func=cmd_record)
 
     p = sub.add_parser("discover", help="dry run: show which containers/processes would be recorded")

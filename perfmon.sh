@@ -17,15 +17,35 @@ REC_PID="$STATE/recorder.pid"
 WEB_PID="$STATE/web.pid"
 export PYTHONPATH="$HERE${PYTHONPATH:+:$PYTHONPATH}"
 
+OUT_FILE="$STATE/output_dir"   # data dir chosen by the most recent `start -o DIR`
+
+abspath() { case "$1" in /*) echo "$1" ;; *) echo "$PWD/$1" ;; esac; }
+
+# Global options, before the command: -c CONFIG, -o DATA_DIR (any order).
 CONF_ARGS=()
-if [[ "${1:-}" == "-c" || "${1:-}" == "--config" ]]; then
-  [[ -n "${2:-}" ]] || { echo "usage: $0 -c CONFIG <command> ..." >&2; exit 2; }
-  CONF_ARGS=(-c "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")")
-  shift 2
-elif [[ -n "${PERFMON_CONFIG:-}" ]]; then
-  CONF_ARGS=(-c "$PERFMON_CONFIG")
-elif [[ -f "$HERE/perfmon.conf" ]]; then
-  CONF_ARGS=(-c "$HERE/perfmon.conf")
+OUT_SOURCE=""                  # option | env | remembered | "" (= config file / default)
+[[ -n "${PERFMON_OUTPUT_DIR:-}" ]] && OUT_SOURCE=env
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -c|--config)
+      [[ -n "${2:-}" ]] || { echo "usage: $0 -c CONFIG <command> ..." >&2; exit 2; }
+      CONF_ARGS=(-c "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
+    -o|--output-dir)
+      [[ -n "${2:-}" ]] || { echo "usage: $0 -o DATA_DIR <command> ..." >&2; exit 2; }
+      export PERFMON_OUTPUT_DIR="$(abspath "$2")"; OUT_SOURCE=option; shift 2 ;;
+    *) break ;;
+  esac
+done
+if [[ ${#CONF_ARGS[@]} -eq 0 ]]; then
+  if [[ -n "${PERFMON_CONFIG:-}" ]]; then
+    CONF_ARGS=(-c "$PERFMON_CONFIG")
+  elif [[ -f "$HERE/perfmon.conf" ]]; then
+    CONF_ARGS=(-c "$HERE/perfmon.conf")
+  fi
+fi
+# Until the next `start`, every command follows the data dir of the last `start -o`.
+if [[ -z "$OUT_SOURCE" && -s "$OUT_FILE" ]]; then
+  export PERFMON_OUTPUT_DIR="$(cat "$OUT_FILE")"; OUT_SOURCE=remembered
 fi
 
 find_python() {
@@ -55,6 +75,16 @@ warn_root() {
   fi
 }
 
+data_dir() {
+  "$PY" - ${CONF_ARGS[@]+"${CONF_ARGS[@]}"} <<'PYEOF'
+import argparse, sys
+from perfmon.cli import load_config
+print(load_config(argparse.Namespace(config=sys.argv[2] if len(sys.argv) > 2 else None)).output_dir)
+PYEOF
+}
+
+web_dir() { sed -n 's/^perfmon dashboard serving //p' "$STATE/web.out" 2>/dev/null | head -n 1; }
+
 latest_run() {
   "$PY" - ${CONF_ARGS[@]+"${CONF_ARGS[@]}"} <<'EOF'
 import sys
@@ -72,10 +102,26 @@ cmd_start() {
   if alive "$REC_PID"; then
     echo "already recording (pid $(cat "$REC_PID")) -> $(latest_run)"; exit 1
   fi
-  local name="${1:-run}"; [[ $# -gt 0 ]] && shift
+  local name="run" args=()
+  if [[ $# -gt 0 && "$1" != -* ]]; then name="$1"; shift; fi
+  # -o DIR after the name: handled here so later commands find the same run.
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -o|--output-dir)
+        [[ -n "${2:-}" ]] || { echo "-o needs a directory" >&2; exit 2; }
+        export PERFMON_OUTPUT_DIR="$(abspath "$2")"; OUT_SOURCE=option; shift 2 ;;
+      --output-dir=*) export PERFMON_OUTPUT_DIR="$(abspath "${1#*=}")"; OUT_SOURCE=option; shift ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  if [[ "$OUT_SOURCE" == remembered ]]; then   # a plain `start` goes back to the config file
+    unset PERFMON_OUTPUT_DIR; OUT_SOURCE=""
+  fi
   warn_root start
   mkdir -p "$STATE"
-  nohup "$PY" -m perfmon ${CONF_ARGS[@]+"${CONF_ARGS[@]}"} record -n "$name" "$@" >"$STATE/recorder.out" 2>&1 &
+  if [[ -n "$OUT_SOURCE" ]]; then echo "$PERFMON_OUTPUT_DIR" >"$OUT_FILE"; else rm -f "$OUT_FILE"; fi
+  nohup "$PY" -m perfmon ${CONF_ARGS[@]+"${CONF_ARGS[@]}"} record -n "$name" ${args[@]+"${args[@]}"} \
+    >"$STATE/recorder.out" 2>&1 &
   echo $! >"$REC_PID"
   sleep 2
   if ! alive "$REC_PID"; then
@@ -84,7 +130,12 @@ cmd_start() {
   echo "recording '$name' (pid $(cat "$REC_PID"))"
   echo "  data : $(latest_run)"
   echo "  log  : $STATE/recorder.out"
-  alive "$WEB_PID" || echo "  live charts: $0 web"
+  if ! alive "$WEB_PID"; then
+    echo "  live charts: $0 web"
+  elif [[ "$(web_dir)" != "$(data_dir)" ]]; then
+    echo "  note: the web dashboard is showing $(web_dir); restart it to see this run:"
+    echo "        $0 web-stop && $0 web"
+  fi
 }
 
 cmd_stop() {
@@ -106,13 +157,18 @@ cmd_stop() {
 }
 
 cmd_status() {
+  local src="config file"
+  case "$OUT_SOURCE" in
+    option) src="-o option" ;; env) src="\$PERFMON_OUTPUT_DIR" ;; remembered) src="from the last start -o" ;;
+  esac
+  echo "data     : $(data_dir)  ($src)"
   if alive "$REC_PID"; then
     echo "recorder : running (pid $(cat "$REC_PID")) -> $(latest_run)"
   else
     echo "recorder : stopped"
   fi
   if alive "$WEB_PID"; then
-    echo "web      : running (pid $(cat "$WEB_PID"))"
+    echo "web      : running (pid $(cat "$WEB_PID")), showing $(web_dir)"
     grep -E "http://" "$STATE/web.out" 2>/dev/null | head -n 4 | sed 's/^/           /'
   else
     echo "web      : stopped"
@@ -183,7 +239,11 @@ Foreground / advanced
   $0 record [-n NAME] [-i SECS] [-d DURATION]
   $0 serve [--bind ADDR] [--port N] [--auth user:pass]
 
-Global: $0 -c CONFIG <command>   (default: ./perfmon.conf next to this script, if present)
+Global options (before the command):
+  -c CONFIG     config file (default: perfmon.conf next to this script, or \$PERFMON_CONFIG)
+  -o DATA_DIR   where recordings are written and read (default: output_dir in the config,
+                or \$PERFMON_OUTPUT_DIR). "start NAME -o DIR" works too; later commands
+                then use DIR until the next start.
 EOF
 }
 
