@@ -37,6 +37,21 @@ scp perfmon.tgz user@loadbox:/opt/
 cd /opt && mkdir perfmon && tar xzf perfmon.tgz -C perfmon && cd perfmon
 ```
 
+Or clone straight onto the Linux box: `git clone https://github.com/crazymatthsu/linux-perf.git`.
+
+**Line endings.** All files use Linux (LF) line endings. `.gitattributes`
+keeps them that way even when the repo is cloned on Windows, where Git
+otherwise converts to CRLF by default. If the files went through a Windows
+editor or a tool that converts them anyway, fix them on the Linux box:
+
+```bash
+sed -i 's/\r$//' perfmon.sh perfmon.conf* perfmon/*.py perfmon/web/*   # or: dos2unix ...
+chmod +x perfmon.sh          # unzipping on Windows drops the executable bit
+```
+
+A `perfmon.conf` saved by Windows Notepad is fine as is; only `perfmon.sh`
+is sensitive.
+
 Requirements on the box: `bash` and Python **3.6+**. RHEL 8's
 `/usr/libexec/platform-python` is detected automatically. You also need the
 `docker` (or `podman`) CLI. Root is **not** required; see the next section.
@@ -369,6 +384,8 @@ least as new as the one it was built against. Use a recent base image.
 
 | symptom | fix |
 |---------|-----|
+| `/usr/bin/env: 'bash\r': No such file or directory` or `$'\r': command not found` | the script got Windows line endings on the way: `sed -i 's/\r$//' perfmon.sh` (see [Deploy](#1-deploy)) |
+| `./perfmon.sh: Permission denied` | the executable bit was lost (e.g. unzipped on Windows): `chmod +x perfmon.sh`, or run `bash perfmon.sh ...` |
 | `container discovery failed: permission denied` | add the account to the `docker` group, run with `sudo`, or set `docker_cmd = sudo docker` |
 | a process is missing in `discover` | check its name with `docker top <container>`. `exe` must match the executable exactly. Use `process` for command-line text |
 | container rows but no process rows | the process regex didn't match. Try `process = .*` and narrow down |
